@@ -3,41 +3,77 @@ from datetime import datetime
 import pandas as pd
 from PIL import Image
 import os
+import json
+
+# --- LIBRARY FIREBASE ---
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 # --- KONFIGURASI HALAMAN ---
-st.set_page_config(page_title="DompetKu Dashboard", page_icon="💰", layout="wide")
+st.set_page_config(page_title="DompetKu Cloud", page_icon="🔥", layout="wide")
+st.markdown("""<style>.stButton button {height: 60px; font-weight: bold; border-radius: 12px;}</style>""", unsafe_allow_html=True)
 
-# --- CSS ---
-st.markdown("""
-<style>
-    .stButton button {
-        height: 60px;
-        font-weight: bold;
-        border-radius: 12px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# --- KONEKSI KE FIREBASE (RAHASIA) ---
+# Cek apakah Firebase sudah terhubung biar tidak error saat refresh
+if not firebase_admin._apps:
+    try:
+        # Mengambil kunci dari Streamlit Secrets
+        key_dict = json.loads(st.secrets["firebase"]["textkey"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Gagal login ke Firebase: {e}. Pastikan Secrets sudah diisi.")
+        st.stop()
+
+db = firestore.client()
+
+# --- FUNGSI CRUD FIREBASE ---
+def load_data_firestore():
+    """Mengambil semua data dari Cloud"""
+    try:
+        # Ambil koleksi 'transaksi', urutkan berdasarkan Tanggal terbaru
+        docs = db.collection('transaksi').order_by('Tanggal', direction=firestore.Query.DESCENDING).stream()
+        data = []
+        for doc in docs:
+            d = doc.to_dict()
+            d['id'] = doc.id # Simpan ID dokumen biar bisa diedit/hapus nanti
+            data.append(d)
+        return data
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return []
+
+def tambah_data_firestore(data):
+    """Mengirim data baru ke Cloud"""
+    db.collection('transaksi').add(data)
+
+def hapus_data_firestore(doc_id):
+    """Menghapus data di Cloud berdasarkan ID"""
+    db.collection('transaksi').document(doc_id).delete()
+
+def update_data_firestore(doc_id, data_baru):
+    """Update data di Cloud"""
+    db.collection('transaksi').document(doc_id).update(data_baru)
 
 # --- CEK LIBRARY OCR ---
 OCR_AVAILABLE = False
 try:
     import pytesseract
     OCR_AVAILABLE = True
-except ImportError:
-    st.error("⚠️ Library 'pytesseract' belum terinstall. Fitur Scan Struk dimatikan.")
+except ImportError: pass
 
-# --- KONFIGURASI TESSERACT OTOMATIS (WINDOWS) ---
+# --- KONFIGURASI TESSERACT OTOMATIS (WINDOWS - JIKA DI LOCAL) ---
 tesseract_found = False
 if OCR_AVAILABLE and os.name == 'nt': 
     kemungkinan_path = [
         r'C:\Users\User\AppData\Local\Programs\Tesseract-OCR\tesseract.exe',
         os.path.expanduser(r'~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'),
         r'C:\Program Files\Tesseract-OCR\tesseract.exe',               
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',         
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe', 
         os.path.join(os.getenv('LOCALAPPDATA', ''), r'Programs\Tesseract-OCR\tesseract.exe'),
         os.path.join(os.getenv('LOCALAPPDATA', ''), r'Tesseract-OCR\tesseract.exe')
     ]
-    
     for path in kemungkinan_path:
         if os.path.exists(path):
             pytesseract.pytesseract.tesseract_cmd = path
@@ -45,19 +81,18 @@ if OCR_AVAILABLE and os.name == 'nt':
             break
 
 # --- INISIALISASI SESSION STATE ---
-if 'transaksi' not in st.session_state:
-    st.session_state['transaksi'] = []
+# Kita load data setiap kali halaman direfresh untuk memastikan data sinkron
+st.session_state['transaksi'] = load_data_firestore()
+
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
 # --- FUNGSI OCR ---
 def proses_ocr(gambar):
-    if not OCR_AVAILABLE:
-        return 0
+    if not OCR_AVAILABLE: return 0
     if os.name == 'nt' and not tesseract_found:
-        st.error("⚠️ Software Tesseract-OCR tidak ditemukan.")
+        st.warning("Tesseract tidak ditemukan di Windows ini.")
         return 0
-
     try:
         text = pytesseract.image_to_string(gambar)
         import re
@@ -65,177 +100,148 @@ def proses_ocr(gambar):
         angka_ditemukan = re.findall(r'\d+', text_bersih)
         if angka_ditemukan:
             angka_int = [int(n) for n in angka_ditemukan if n.isdigit()]
-            if angka_int:
-                return max(angka_int)
+            if angka_int: return max(angka_int)
     except Exception as e:
-        st.error(f"Gagal memproses gambar: {e}")
+        st.error(f"Error OCR: {e}")
     return 0
 
 # --- FUNGSI HITUNG SALDO ---
 def hitung_statistik():
+    if not st.session_state['transaksi']: return 0, 0, 0
     masuk = sum(t['Nominal'] for t in st.session_state['transaksi'] if t['Jenis'] == 'Pemasukan')
     keluar = sum(t['Nominal'] for t in st.session_state['transaksi'] if t['Jenis'] == 'Pengeluaran')
-    saldo = masuk - keluar
-    return masuk, keluar, saldo
+    return masuk, keluar, masuk - keluar
 
-# ==========================================
-# TAMPILAN UTAMA (DASHBOARD)
-# ==========================================
+# UI DASHBOARD
+st.title("🔥 DompetKu (Cloud Connected)")
+st.caption("Data tersimpan aman di Google Firestore")
 
-st.title("💰 DompetKu")
-st.markdown("### Ringkasan Keuangan")
-
-# 1. BAGIAN METRICS
 masuk, keluar, saldo = hitung_statistik()
-col1, col2, col3 = st.columns(3)
-col1.metric("Sisa Saldo", f"Rp {saldo:,}", delta=f"{saldo}", delta_color="normal")
-col2.metric("Total Pemasukan", f"Rp {masuk:,}", delta="+", delta_color="inverse")
-col3.metric("Total Pengeluaran", f"Rp {keluar:,}", delta="-", delta_color="inverse")
+c1, c2, c3 = st.columns(3)
+c1.metric("Sisa Saldo", f"Rp {saldo:,}")
+c2.metric("Pemasukan", f"Rp {masuk:,}", delta="+")
+c3.metric("Pengeluaran", f"Rp {keluar:,}", delta="-")
 
 st.markdown("---")
 
-# 2. TOMBOL AKSI CEPAT
-col_btn1, col_btn2 = st.columns(2)
-
-with col_btn1:
+# TOMBOL AKSI
+b1, b2 = st.columns(2)
+with b1:
     if st.button("➕ TAMBAH PEMASUKAN", use_container_width=True, type="primary"):
         st.session_state['active_form'] = 'Pemasukan'
-
-with col_btn2:
+with b2:
     if st.button("➖ TAMBAH PENGELUARAN", use_container_width=True):
         st.session_state['active_form'] = 'Pengeluaran'
 
-# 3. BAGIAN FORM INPUT
-if st.session_state['active_form'] is not None:
-    jenis_transaksi = st.session_state['active_form']
-    container_color = "green" if jenis_transaksi == "Pemasukan" else "red"
-    st.markdown(f"#### Form Input: :{container_color}[{jenis_transaksi}]")
+# FORM INPUT
+if st.session_state['active_form']:
+    jenis = st.session_state['active_form']
+    color = "green" if jenis == "Pemasukan" else "red"
+    st.markdown(f"#### Form: :{color}[{jenis}]")
     
     with st.container(border=True):
-        nominal_awal = 0
-        
-        # Fitur Kamera
-        if jenis_transaksi == "Pengeluaran" and OCR_AVAILABLE:
-            use_camera = st.checkbox("📸 Scan Struk Belanja")
-            if use_camera:
-                if not tesseract_found and os.name == 'nt':
-                    st.warning("⚠️ Tesseract belum terinstall.")
-                img_file = st.camera_input("Ambil Foto")
-                if img_file:
-                    image = Image.open(img_file)
-                    st.image(image, width=200)
-                    if st.button("🔍 Baca Harga Otomatis"):
-                        with st.spinner('Membaca...'):
-                            hasil = proses_ocr(image)
-                        if hasil > 0:
-                            st.success(f"Ditemukan: Rp {hasil:,}")
-                            nominal_awal = hasil
-                        else:
-                            st.warning("Angka tidak terbaca.")
+        nom_awal = 0
+        if jenis == "Pengeluaran" and OCR_AVAILABLE:
+            use_cam = st.checkbox("📸 Scan Struk")
+            if use_cam:
+                img = st.camera_input("Foto")
+                if img:
+                    res = proses_ocr(Image.open(img))
+                    if res > 0: 
+                        st.success(f"Ketemu: {res}")
+                        nom_awal = res
+                    else: st.warning("Gagal baca.")
 
-        # Form Isian
-        with st.form("form_dinamis"):
-            col_in1, col_in2 = st.columns(2)
-            with col_in1:
-                nominal = st.number_input("Nominal (Rp)", min_value=0, value=nominal_awal, step=1000)
-            with col_in2:
-                keterangan = st.text_input("Keterangan", placeholder="Contoh: Makan Siang")
+        with st.form("f1"):
+            c1, c2 = st.columns(2)
+            nom = c1.number_input("Nominal", min_value=0, value=nom_awal, step=1000)
+            ket = c2.text_input("Keterangan", placeholder="Cth: Bayar Listrik")
             
-            col_submit, col_cancel = st.columns([1, 4])
-            with col_submit:
-                submitted = st.form_submit_button("💾 SIMPAN")
-            
-            if submitted:
-                if nominal > 0:
+            if st.form_submit_button("💾 SIMPAN KE CLOUD"):
+                if nom > 0:
                     baru = {
                         'Tanggal': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        'Jenis': jenis_transaksi,
-                        'Nominal': nominal,
-                        'Keterangan': keterangan if keterangan else "-"
+                        'Jenis': jenis,
+                        'Nominal': nom,
+                        'Keterangan': ket if ket else "-"
                     }
-                    st.session_state['transaksi'].insert(0, baru)
+                    tambah_data_firestore(baru) # <--- KIRIM KE CLOUD
+                    st.success("Tersimpan di Cloud!")
                     st.session_state['active_form'] = None
                     st.rerun()
-                else:
-                    st.error("Nominal harus > 0")
-
-    if st.button("❌ Tutup Form"):
+                else: st.error("Nominal 0")
+    
+    if st.button("Tutup"):
         st.session_state['active_form'] = None
         st.rerun()
 
 st.markdown("---")
+st.subheader("📋 Riwayat Transaksi (Live Sync)")
 
-# 4. TABEL RIWAYAT (EDITABLE / BISA DIEDIT LANGSUNG)
-st.subheader("📋 Riwayat Transaksi (Edit Langsung di Tabel)")
-
-if len(st.session_state['transaksi']) > 0:
-    # Siapkan Data
+if st.session_state['transaksi']:
     df = pd.DataFrame(st.session_state['transaksi'])
+    if "Hapus" not in df.columns: df["Hapus"] = False
     
-    # Tambahkan kolom 'Hapus' default False untuk checkbox
-    if "Hapus" not in df.columns:
-        df["Hapus"] = False
-        
-    # Atur ulang urutan kolom agar 'Hapus' ada di paling kiri atau kanan
-    cols = ["Hapus", "Tanggal", "Jenis", "Nominal", "Keterangan"]
-    df = df[cols]
-
-    # Tampilkan Data Editor (Tabel yang bisa diedit)
+    # Editor Tabel
     edited_df = st.data_editor(
-        df,
+        df[["Hapus", "Tanggal", "Jenis", "Nominal", "Keterangan", "id"]], # ID ikut ditampilkan tapi hidden nanti
         use_container_width=True,
         column_config={
-            "Hapus": st.column_config.CheckboxColumn(
-                "Hapus?",
-                help="Centang untuk menghapus data ini",
-                default=False,
-            ),
-            "Tanggal": st.column_config.TextColumn(
-                "Waktu",
-                disabled=True # Tanggal tidak usah diedit biar aman
-            ),
-            "Jenis": st.column_config.SelectboxColumn(
-                "Tipe",
-                options=["Pemasukan", "Pengeluaran"], # Bisa ganti tipe lewat dropdown di tabel
-                width="medium",
-                required=True
-            ),
-            "Nominal": st.column_config.NumberColumn(
-                "Nominal (Rp)",
-                format="Rp %d",
-                min_value=0,
-                required=True
-            ),
-            "Keterangan": st.column_config.TextColumn(
-                "Keterangan",
-                width="large",
-                required=True
-            )
+            "id": None, # Sembunyikan kolom ID
+            "Hapus": st.column_config.CheckboxColumn("Hapus?", default=False),
+            "Nominal": st.column_config.NumberColumn("Rp", format="Rp %d"),
+            "Jenis": st.column_config.SelectboxColumn("Tipe", options=["Pemasukan", "Pengeluaran"])
         },
-        hide_index=True,
-        num_rows="fixed" # Jumlah baris tetap, hapus lewat checkbox
+        hide_index=True, num_rows="fixed"
     )
 
-    # LOGIKA UPDATE DATA
-    # Cek apakah ada perubahan di tabel (edited_df beda dengan session_state)
-    
-    # 1. Cek Hapus Data
+    # LOGIKA SIMPAN PERUBAHAN KE CLOUD
+    # 1. Cek Hapus
     if edited_df["Hapus"].any():
-        # Ambil data yang TIDAK dicentang hapus
-        data_baru = edited_df[edited_df["Hapus"] == False].drop(columns=["Hapus"])
-        # Update session state
-        st.session_state['transaksi'] = data_baru.to_dict('records')
-        st.rerun() # Refresh agar baris yang dihapus hilang
-    
-    # 2. Cek Edit Data (Jika nominal/ket berubah)
-    # Kita bandingkan data saat ini dengan data hasil edit (tanpa kolom Hapus)
-    data_edit_bersih = edited_df.drop(columns=["Hapus"]).to_dict('records')
-    
-    # Jika ada perbedaan isi data, simpan ke session state
-    if data_edit_bersih != st.session_state['transaksi']:
-        st.session_state['transaksi'] = data_edit_bersih
-        # Kita rerun agar perhitungan saldo di atas langsung berubah
+        to_delete = edited_df[edited_df["Hapus"] == True]
+        for index, row in to_delete.iterrows():
+            hapus_data_firestore(row['id']) # Hapus di Cloud berdasarkan ID unik
         st.rerun()
+    
+    # 2. Cek Edit (Agak kompleks karena harus bandingkan per baris)
+    # Kita bandingkan dataframe asli (dari session) dengan hasil edit
+    # Karena pandas compare agak ribet, kita pakai loop sederhana untuk mendeteksi perubahan
+    # (Hanya berjalan jika tombol Hapus tidak dicentang)
+    elif not edited_df["Hapus"].any():
+        original_data = pd.DataFrame(st.session_state['transaksi'])
+        # Pastikan kolom sama
+        cols = ["Tanggal", "Jenis", "Nominal", "Keterangan", "id"]
+        
+        # Jika user mengubah sesuatu, data editor akan mengembalikan nilai baru
+        # Kita perlu mencari baris mana yang berubah
+        # Cara termudah: Loop dan update jika beda (ini agak boros operasi tapi paling mudah dipahami)
+        
+        # Note: Streamlit data_editor tidak memberikan event "on_change" per baris secara langsung
+        # Jadi kita harus membandingkan manual atau menggunakan tombol "Simpan Perubahan"
+        # Untuk kemudahan di sini, kita pakai tombol Update Manual agar tidak spamming database
+        
+        if not edited_df[cols].equals(original_data[cols]):
+            if st.button("⚠️ Deteksi Perubahan: Simpan ke Cloud?"):
+                # Cari baris yang beda
+                for index, row in edited_df.iterrows():
+                    orig_row = original_data.iloc[index]
+                    # Bandingkan nilai penting
+                    if (row['Nominal'] != orig_row['Nominal'] or 
+                        row['Keterangan'] != orig_row['Keterangan'] or 
+                        row['Jenis'] != orig_row['Jenis']):
+                        
+                        update_data_firestore(row['id'], {
+                            'Nominal': row['Nominal'],
+                            'Keterangan': row['Keterangan'],
+                            'Jenis': row['Jenis']
+                        })
+                st.success("Database Cloud Diperbarui!")
+                st.rerun()
 
+    # Tombol Reset
+    if st.button("🗑️ Reset Semua (Hati-hati!)"):
+        for t in st.session_state['transaksi']:
+            hapus_data_firestore(t['id'])
+        st.rerun()
 else:
-    st.info("Belum ada transaksi. Tekan tombol di atas untuk mulai mencatat!")
+    st.info("Data kosong. Silakan tambah data, nanti otomatis masuk ke Google Firebase.")
