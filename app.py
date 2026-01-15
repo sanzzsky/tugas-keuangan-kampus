@@ -4,6 +4,7 @@ import pandas as pd
 from PIL import Image
 import os
 import json
+import re 
 
 # --- LIBRARY FIREBASE ---
 import firebase_admin
@@ -14,30 +15,46 @@ from firebase_admin import firestore
 st.set_page_config(page_title="DompetKu Cloud", page_icon="🔥", layout="wide")
 st.markdown("""<style>.stButton button {height: 60px; font-weight: bold; border-radius: 12px;}</style>""", unsafe_allow_html=True)
 
-# --- KONEKSI KE FIREBASE (RAHASIA) ---
-# Cek apakah Firebase sudah terhubung biar tidak error saat refresh
+# --- KONEKSI KE FIREBASE (VERSI ANTI ERROR) ---
 if not firebase_admin._apps:
     try:
-        # Mengambil kunci dari Streamlit Secrets
-        key_dict = json.loads(st.secrets["firebase"]["textkey"])
+        # Ambil teks mentah dari Secrets
+        raw_key = st.secrets["firebase"]["textkey"]
+        
+        # 1. Coba load normal dengan mode santai (strict=False)
+        try:
+            key_dict = json.loads(raw_key, strict=False)
+        except json.JSONDecodeError:
+            # 2. Jika gagal, kita coba bersihkan manual karakter 'Enter' yang nyasar
+            # Kita ganti baris baru (\n) menjadi spasi, tapi hati-hati
+            # Trik paling aman: Hapus control character (ASCII 0-31) kecuali struktur JSON
+            # Namun untuk pemula, kita coba parsing paksa:
+            fixed_key = raw_key.replace('\n', ' ')
+            key_dict = json.loads(fixed_key, strict=False)
+
+        # 3. Perbaiki format Private Key agar bisa dibaca Firebase
+        # Kadang private key jadi satu baris panjang, kita harus pastikan formatnya benar
+        if "private_key" in key_dict:
+            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+
+        # Login ke Firebase
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
+        
     except Exception as e:
-        st.error(f"Gagal login ke Firebase: {e}. Pastikan Secrets sudah diisi.")
+        st.error(f"Gagal login ke Firebase. Coba cek Secrets lagi. Error detail: {e}")
         st.stop()
 
 db = firestore.client()
 
 # --- FUNGSI CRUD FIREBASE ---
 def load_data_firestore():
-    """Mengambil semua data dari Cloud"""
     try:
-        # Ambil koleksi 'transaksi', urutkan berdasarkan Tanggal terbaru
         docs = db.collection('transaksi').order_by('Tanggal', direction=firestore.Query.DESCENDING).stream()
         data = []
         for doc in docs:
             d = doc.to_dict()
-            d['id'] = doc.id # Simpan ID dokumen biar bisa diedit/hapus nanti
+            d['id'] = doc.id 
             data.append(d)
         return data
     except Exception as e:
@@ -45,15 +62,12 @@ def load_data_firestore():
         return []
 
 def tambah_data_firestore(data):
-    """Mengirim data baru ke Cloud"""
     db.collection('transaksi').add(data)
 
 def hapus_data_firestore(doc_id):
-    """Menghapus data di Cloud berdasarkan ID"""
     db.collection('transaksi').document(doc_id).delete()
 
 def update_data_firestore(doc_id, data_baru):
-    """Update data di Cloud"""
     db.collection('transaksi').document(doc_id).update(data_baru)
 
 # --- CEK LIBRARY OCR ---
@@ -63,7 +77,7 @@ try:
     OCR_AVAILABLE = True
 except ImportError: pass
 
-# --- KONFIGURASI TESSERACT OTOMATIS (WINDOWS - JIKA DI LOCAL) ---
+# --- KONFIGURASI TESSERACT (Windows Only) ---
 tesseract_found = False
 if OCR_AVAILABLE and os.name == 'nt': 
     kemungkinan_path = [
@@ -81,8 +95,11 @@ if OCR_AVAILABLE and os.name == 'nt':
             break
 
 # --- INISIALISASI SESSION STATE ---
-# Kita load data setiap kali halaman direfresh untuk memastikan data sinkron
-st.session_state['transaksi'] = load_data_firestore()
+if 'transaksi' not in st.session_state:
+    st.session_state['transaksi'] = load_data_firestore()
+    # Paksakan reload jika kosong agar sinkron
+    if not st.session_state['transaksi']:
+        st.session_state['transaksi'] = load_data_firestore()
 
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
@@ -91,7 +108,7 @@ if 'active_form' not in st.session_state:
 def proses_ocr(gambar):
     if not OCR_AVAILABLE: return 0
     if os.name == 'nt' and not tesseract_found:
-        st.warning("Tesseract tidak ditemukan di Windows ini.")
+        st.warning("Tesseract tidak ditemukan.")
         return 0
     try:
         text = pytesseract.image_to_string(gambar)
@@ -112,7 +129,9 @@ def hitung_statistik():
     keluar = sum(t['Nominal'] for t in st.session_state['transaksi'] if t['Jenis'] == 'Pengeluaran')
     return masuk, keluar, masuk - keluar
 
+# ==========================================
 # UI DASHBOARD
+# ==========================================
 st.title("🔥 DompetKu (Cloud Connected)")
 st.caption("Data tersimpan aman di Google Firestore")
 
@@ -165,8 +184,9 @@ if st.session_state['active_form']:
                         'Nominal': nom,
                         'Keterangan': ket if ket else "-"
                     }
-                    tambah_data_firestore(baru) # <--- KIRIM KE CLOUD
-                    st.success("Tersimpan di Cloud!")
+                    tambah_data_firestore(baru) 
+                    st.success("Tersimpan!")
+                    st.session_state['transaksi'] = load_data_firestore() # Reload data terbaru
                     st.session_state['active_form'] = None
                     st.rerun()
                 else: st.error("Nominal 0")
@@ -182,12 +202,17 @@ if st.session_state['transaksi']:
     df = pd.DataFrame(st.session_state['transaksi'])
     if "Hapus" not in df.columns: df["Hapus"] = False
     
-    # Editor Tabel
+    # Pastikan kolom ada sebelum ditampilkan
+    cols_to_show = ["Hapus", "Tanggal", "Jenis", "Nominal", "Keterangan", "id"]
+    for col in cols_to_show:
+        if col not in df.columns:
+            df[col] = "" # Isi dummy jika kolom hilang
+
     edited_df = st.data_editor(
-        df[["Hapus", "Tanggal", "Jenis", "Nominal", "Keterangan", "id"]], # ID ikut ditampilkan tapi hidden nanti
+        df[cols_to_show], 
         use_container_width=True,
         column_config={
-            "id": None, # Sembunyikan kolom ID
+            "id": None, 
             "Hapus": st.column_config.CheckboxColumn("Hapus?", default=False),
             "Nominal": st.column_config.NumberColumn("Rp", format="Rp %d"),
             "Jenis": st.column_config.SelectboxColumn("Tipe", options=["Pemasukan", "Pengeluaran"])
@@ -195,53 +220,33 @@ if st.session_state['transaksi']:
         hide_index=True, num_rows="fixed"
     )
 
-    # LOGIKA SIMPAN PERUBAHAN KE CLOUD
-    # 1. Cek Hapus
     if edited_df["Hapus"].any():
         to_delete = edited_df[edited_df["Hapus"] == True]
         for index, row in to_delete.iterrows():
-            hapus_data_firestore(row['id']) # Hapus di Cloud berdasarkan ID unik
+            hapus_data_firestore(row['id'])
+        st.session_state['transaksi'] = load_data_firestore()
         st.rerun()
     
-    # 2. Cek Edit (Agak kompleks karena harus bandingkan per baris)
-    # Kita bandingkan dataframe asli (dari session) dengan hasil edit
-    # Karena pandas compare agak ribet, kita pakai loop sederhana untuk mendeteksi perubahan
-    # (Hanya berjalan jika tombol Hapus tidak dicentang)
     elif not edited_df["Hapus"].any():
-        original_data = pd.DataFrame(st.session_state['transaksi'])
-        # Pastikan kolom sama
-        cols = ["Tanggal", "Jenis", "Nominal", "Keterangan", "id"]
-        
-        # Jika user mengubah sesuatu, data editor akan mengembalikan nilai baru
-        # Kita perlu mencari baris mana yang berubah
-        # Cara termudah: Loop dan update jika beda (ini agak boros operasi tapi paling mudah dipahami)
-        
-        # Note: Streamlit data_editor tidak memberikan event "on_change" per baris secara langsung
-        # Jadi kita harus membandingkan manual atau menggunakan tombol "Simpan Perubahan"
-        # Untuk kemudahan di sini, kita pakai tombol Update Manual agar tidak spamming database
-        
-        if not edited_df[cols].equals(original_data[cols]):
-            if st.button("⚠️ Deteksi Perubahan: Simpan ke Cloud?"):
-                # Cari baris yang beda
-                for index, row in edited_df.iterrows():
-                    orig_row = original_data.iloc[index]
-                    # Bandingkan nilai penting
-                    if (row['Nominal'] != orig_row['Nominal'] or 
-                        row['Keterangan'] != orig_row['Keterangan'] or 
-                        row['Jenis'] != orig_row['Jenis']):
-                        
-                        update_data_firestore(row['id'], {
-                            'Nominal': row['Nominal'],
-                            'Keterangan': row['Keterangan'],
-                            'Jenis': row['Jenis']
-                        })
-                st.success("Database Cloud Diperbarui!")
-                st.rerun()
+        # Tombol manual update untuk keamanan dan performa
+        if st.button("⚠️ Simpan Perubahan Data"):
+            original_data = pd.DataFrame(st.session_state['transaksi'])
+            # Pastikan index reset agar iterasi sama
+            # (Simplifikasi: kita loop saja edited_df dan update semuanya yang ID-nya cocok)
+            for index, row in edited_df.iterrows():
+                update_data_firestore(row['id'], {
+                    'Nominal': row['Nominal'],
+                    'Keterangan': row['Keterangan'],
+                    'Jenis': row['Jenis']
+                })
+            st.success("Data diupdate!")
+            st.session_state['transaksi'] = load_data_firestore()
+            st.rerun()
 
-    # Tombol Reset
     if st.button("🗑️ Reset Semua (Hati-hati!)"):
         for t in st.session_state['transaksi']:
             hapus_data_firestore(t['id'])
+        st.session_state['transaksi'] = []
         st.rerun()
 else:
-    st.info("Data kosong. Silakan tambah data, nanti otomatis masuk ke Google Firebase.")
+    st.info("Data kosong. Silakan tambah data.")
