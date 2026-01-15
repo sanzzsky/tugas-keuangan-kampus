@@ -16,54 +16,51 @@ from firebase_admin import firestore
 st.set_page_config(
     page_title="DompetKu", 
     page_icon="💸", 
-    layout="centered", # Menggunakan 'centered' agar lebih fokus di tengah seperti aplikasi HP
+    layout="centered",
     initial_sidebar_state="collapsed"
 )
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    /* Mengubah Font Utama */
     html, body, [class*="css"] {
         font-family: 'Sans-serif';
     }
     
-    /* Mempercantik Tombol Utama */
+    /* Tombol Utama */
     .stButton button {
         height: 55px;
         font-weight: bold;
         border-radius: 15px;
-        border: none;
         transition: all 0.3s ease;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    
-    /* Efek Hover Tombol */
     .stButton button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 8px rgba(0,0,0,0.15);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
 
-    /* Mempercantik Kartu Metric */
+    /* Kartu Metric */
     div[data-testid="stMetric"] {
-        background-color: #f8f9fa;
         padding: 15px;
         border-radius: 10px;
-        border: 1px solid #e9ecef;
+        border: 1px solid rgba(128, 128, 128, 0.2);
         text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
     
-    /* Judul Aplikasi */
+    /* Judul */
     .main-title {
         font-size: 3rem;
         font-weight: 800;
-        color: #ff4b4b;
+        background: -webkit-linear-gradient(45deg, #FF4B4B, #FF914D);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         text-align: center;
         margin-bottom: 0px;
     }
     .sub-title {
         text-align: center;
-        color: #6c757d;
+        color: gray;
         margin-bottom: 30px;
         font-style: italic;
     }
@@ -138,7 +135,7 @@ if OCR_AVAILABLE and os.name == 'nt':
 # --- INISIALISASI ---
 if 'transaksi' not in st.session_state:
     st.session_state['transaksi'] = load_data_firestore()
-    if not st.session_state['transaksi']: # Double check
+    if not st.session_state['transaksi']: 
         st.session_state['transaksi'] = load_data_firestore()
 
 if 'active_form' not in st.session_state:
@@ -167,9 +164,8 @@ def hitung_statistik():
     return masuk, keluar, masuk - keluar
 
 
-# UI DASHBOARD CANTIK
+# UI DASHBOARD
 
-# Header Custom HTML
 st.markdown('<h1 class="main-title">💸 DompetKu</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Kelola keuanganmu dengan mudah & aman di Cloud</p>', unsafe_allow_html=True)
 
@@ -181,7 +177,7 @@ col_m1.metric("💰 Sisa Saldo", f"Rp {saldo:,}")
 col_m2.metric("📈 Pemasukan", f"Rp {masuk:,}")
 col_m3.metric("📉 Pengeluaran", f"Rp {keluar:,}")
 
-st.write("") # Spacer
+st.write("") 
 
 # 2. TOMBOL AKSI UTAMA
 c_btn1, c_btn2 = st.columns(2)
@@ -192,10 +188,9 @@ with c_btn2:
     if st.button("➖ PENGELUARAN", use_container_width=True):
         st.session_state['active_form'] = 'Pengeluaran'
 
-# 3. FORM INPUT (EXPANDER ANIMATION)
+# 3. FORM INPUT
 if st.session_state['active_form']:
     jenis = st.session_state['active_form']
-    # Tentukan warna header form
     header_color = "🟢" if jenis == "Pemasukan" else "🔴"
     
     st.markdown(f"### {header_color} Tambah {jenis}")
@@ -219,10 +214,9 @@ if st.session_state['active_form']:
             nom = c_in1.number_input("Nominal (Rp)", min_value=0, value=nom_awal, step=5000)
             ket = c_in2.text_input("Keterangan", placeholder="Contoh: Beli Kopi")
             
-            # Layout tombol simpan
             c_submit, c_space = st.columns([1, 2])
             
-            if c_submit.form_submit_button("💾 SIMPAN DATA", use_container_width=True):
+            if c_submit.form_submit_button("💾 SIMPAN ", use_container_width=True):
                 if nom > 0:
                     baru = {
                         'Tanggal': datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -232,10 +226,8 @@ if st.session_state['active_form']:
                     }
                     tambah_data_firestore(baru) 
                     
-                    # Efek Toast (Pesan Keren)
                     st.toast('✅ Data berhasil disimpan ke Cloud!', icon='☁️')
-                    time.sleep(1) # Tunggu sebentar biar user baca
-                    
+                    time.sleep(1)
                     st.session_state['transaksi'] = load_data_firestore()
                     st.session_state['active_form'] = None
                     st.rerun()
@@ -263,7 +255,7 @@ if st.session_state['transaksi']:
         use_container_width=True,
         column_config={
             "id": None, 
-            "Hapus": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
+            "Hapus": st.column_config.CheckboxColumn("🗑️ Hapus", width="small", default=False),
             "Nominal": st.column_config.NumberColumn("Nominal", format="Rp %d"),
             "Jenis": st.column_config.SelectboxColumn("Tipe", options=["Pemasukan", "Pengeluaran"], width="small"),
             "Tanggal": st.column_config.TextColumn("Waktu", disabled=True),
@@ -301,17 +293,25 @@ if st.session_state['transaksi']:
 else:
     st.info("👋 Belum ada data. Yuk mulai catat keuanganmu!")
 
-# --- SIDEBAR (UNTUK RESET DATA AGAR AMAN) ---
-with st.sidebar:
-    st.header("Pengaturan")
-    st.write("Hati-hati, tombol ini akan menghapus semua data di database.")
-    if st.button("💀 RESET SEMUA DATA", type="primary"):
-        konfirmasi = st.checkbox("Saya yakin ingin menghapus semua data")
-        if konfirmasi:
-            with st.spinner("Mereset database..."):
+# --- FOOTER  ---
+st.write("")
+st.write("")
+st.write("")
+
+# Membuat kolom agar tombol reset mojok di kanan
+col_spacer, col_reset = st.columns([3, 1])
+
+with col_reset:
+    # Menggunakan Expander agar tidak terpencet tidak sengaja
+    with st.expander("💀 Reset Database"):
+        st.warning("Semua data akan dihapus permanen!")
+        konfirmasi_reset = st.checkbox("Saya Yakin")
+        
+        if st.button("HAPUS SEMUA", type="primary", use_container_width=True, disabled=not konfirmasi_reset):
+            with st.spinner("Membersihkan database..."):
                 for t in st.session_state['transaksi']:
                     hapus_data_firestore(t['id'])
-                st.success("Database bersih!")
+                st.toast("Database bersih!", icon='✨')
                 time.sleep(1)
                 st.session_state['transaksi'] = []
                 st.rerun()
