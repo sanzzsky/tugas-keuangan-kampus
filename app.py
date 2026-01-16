@@ -135,11 +135,8 @@ if 'transaksi' not in st.session_state:
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
-# --- FUNGSI OCR SUPER CERDAS (BACA ITEM + JUMLAH) ---
+# --- FUNGSI OCR (VERSI "LOOKBEHIND") ---
 def proses_ocr_lengkap(gambar):
-    """
-    Mengembalikan tuple: (Total_Harga, String_Detail_Item)
-    """
     if not OCR_AVAILABLE: return 0, ""
     if os.name == 'nt' and not tesseract_found: return 0, ""
     
@@ -147,82 +144,103 @@ def proses_ocr_lengkap(gambar):
     items_found = []
     
     try:
-        # Ambil teks mentah
         text = pytesseract.image_to_string(gambar)
         lines = text.split('\n')
         text_lower = text.lower()
 
-        # 1. CARI TOTAL HARGA (Logika Keyword)
+        # 1. CARI TOTAL HARGA
         keywords_total = ['total', 'jumlah', 'bayar', 'tagihan', 'amount', 'grand']
         for kw in keywords_total:
             if kw in text_lower:
                 idx = text_lower.find(kw)
                 subtext = text_lower[idx:]
-                # Ambil angka setelah kata kunci
                 nums = re.findall(r'\d+', subtext.replace('.', '').replace(',', ''))
                 for n in nums:
                     val = int(n)
-                    # Filter angka wajar
                     if 1000 <= val <= 50000000:
                         total_found = val
                         break
                 if total_found: break
         
-        # Fallback Total: Cari angka terbesar yang wajar di seluruh struk
         if total_found == 0:
             nums = re.findall(r'\d+', text.replace('.', '').replace(',', ''))
             valid_nums = [int(n) for n in nums if n.isdigit() and 1000 <= int(n) <= 20000000 and len(n) <= 8]
             if valid_nums:
                 total_found = max(valid_nums)
 
-        # 2. CARI DETAIL ITEM (Logika Baris Per Baris)
-        ignore_words = ['total', 'tunai', 'kembali', 'change', 'cash', 'pajak', 'tax', 'diskon', 'telp', 'jl.', 'tanggal', 'date', 'subtotal', 'bayar', 'jumlah', 'no.', 'inv']
+        # 2. CARI DETAIL ITEM (Logika Baru: Cek Baris Atasnya)
+        ignore_words = ['total', 'tunai', 'kembali', 'change', 'cash', 'pajak', 'tax', 'diskon', 'telp', 'jl.', 'tanggal', 'date', 'subtotal', 'bayar', 'jumlah', 'no.', 'inv', 'pos', 'pembayaran']
         
-        for line in lines:
+        for i, line in enumerate(lines):
             line_clean = line.strip()
             line_lower = line_clean.lower()
             
-            # Skip baris kosong/pendek atau header sampah
-            if len(line_clean) < 5: continue
+            # Skip baris sampah
+            if len(line_clean) < 3: continue
             if any(ign in line_lower for ign in ignore_words): continue
             
-            # LOGIKA UTAMA: Cari baris yang berakhiran dengan HARGA
-            # Regex: (Teks Apapun) (Spasi) (Angka/Harga di ujung kanan)
-            match_price = re.search(r'(.+?)\s+((?:Rp\.?|Rp)?\s*[\d,.]+)$', line_clean)
+            # Cek apakah baris ini berakhiran ANGKA (Harga)
+            match_price = re.search(r'((?:Rp\.?|Rp)?\s*[\d,.]+)$', line_clean)
             
             if match_price:
-                # Ambil bagian Teks (Nama Barang)
-                raw_name = match_price.group(1).strip()
-                # Ambil bagian Harga (Untuk validasi saja)
-                raw_price = match_price.group(2).replace('.', '').replace(',', '').replace('Rp', '').strip()
+                # Ambil string harganya saja
+                price_str = match_price.group(1).strip()
+                # Cek validitas harga (harus ada digit)
+                if not any(c.isdigit() for c in price_str): continue
                 
-                # Validasi: Harga harus angka
-                if not raw_price.isdigit(): continue
-                if int(raw_price) < 100: continue # Harga item biasanya > 100 perak
-
-                # Bersihkan Nama Barang dari simbol aneh
-                # Hapus simbol non-huruf di awal string (misal: ".Ayam")
-                clean_name = re.sub(r'^[^\w]+', '', raw_name)
+                # AMBIL TEKS SEBELAH KIRI HARGA (Calon Nama)
+                # Kita potong string berdasarkan posisi harga
+                end_idx = line_clean.rfind(price_str)
+                left_text = line_clean[:end_idx].strip()
                 
-                # Cek apakah ada Qty di depan (misal "2x Ayam" atau "1 Ayam")
-                match_qty = re.match(r'^(\d+)\s*[xX]?\s+(.+)', clean_name)
+                # Bersihkan simbol aneh di awal/akhir
+                left_text = re.sub(r'^[^\w]+|[^\w]+$', '', left_text)
                 
-                if match_qty:
-                    qty = match_qty.group(1)
-                    nama_item = match_qty.group(2)
-                    item_str = f"{qty}x {nama_item}"
+                final_name = ""
+                qty_str = ""
+                
+                # CEK KASUS: Apakah teks kirinya CUMA angka/qty? (Misal: "1" atau "1 x")
+                # Jika iya, berarti nama menunya ada di BARIS SEBELUMNYA (i-1)
+                is_only_qty = re.match(r'^[\d\s\txX]+$', left_text)
+                
+                if is_only_qty or len(left_text) < 2:
+                    if i > 0:
+                        prev_line = lines[i-1].strip()
+                        # Pastikan baris atasnya valid (bukan header/kosong)
+                        if len(prev_line) > 3 and not any(ign in prev_line.lower() for ign in ignore_words):
+                            # Pastikan baris atasnya TIDAK punya harga (biar ga double)
+                            if not re.search(r'[\d,.]+$', prev_line):
+                                final_name = prev_line
+                                qty_str = left_text # Anggap left text skrg adalah Qty
                 else:
-                    item_str = clean_name
+                    # Nama menu ada di baris yang sama
+                    final_name = left_text
                 
-                # Validasi akhir: Nama barang minimal 3 huruf & bukan angka semua
-                if len(item_str) > 2 and not item_str.isdigit():
-                    items_found.append(item_str)
+                # FORMATTING HASIL
+                if final_name:
+                    # Bersihkan nama dari karakter non-huruf berlebih
+                    final_name = re.sub(r'[^\w\s-]', '', final_name).strip()
+                    
+                    # Cek Qty "2x" di dalam nama
+                    match_qty = re.match(r'^(\d+)\s*[xX]?\s+(.+)', final_name)
+                    if match_qty:
+                        qty_str = match_qty.group(1) + "x"
+                        final_name = match_qty.group(2)
+                    elif qty_str:
+                         # Bersihkan qty_str jadi angka saja + "x"
+                         q_nums = re.findall(r'\d+', qty_str)
+                         if q_nums: qty_str = q_nums[0] + "x"
+                    
+                    full_item = f"{qty_str} {final_name}".strip()
+                    
+                    # Validasi: Harus ada huruf (bukan angka doang) & panjang cukup
+                    if re.search(r'[a-zA-Z]', full_item) and len(full_item) > 3:
+                         if not items_found or items_found[-1] != full_item:
+                             items_found.append(full_item)
 
     except Exception as e:
         print(f"OCR Error: {e}")
 
-    # Gabungkan item jadi satu string
-    # Batasi max 5 item agar kolom keterangan tidak meledak
     keterangan_otomatis = ", ".join(items_found[:5]) if items_found else ""
     
     return total_found, keterangan_otomatis
@@ -302,10 +320,10 @@ if st.session_state['active_form']:
 
         with st.form("form_utama", border=False):
             c_in1, c_in2 = st.columns(2)
-            # Input Nominal otomatis terisi
+            # Input Nominal
             nom = c_in1.number_input("Nominal (Rp)", min_value=0, value=nom_awal, step=5000)
             
-            # Input Keterangan otomatis terisi hasil scan
+            # Input Keterangan
             if ket_awal:
                 ket = c_in2.text_input("Keterangan", value=ket_awal)
             else:
