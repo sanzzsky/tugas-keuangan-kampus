@@ -26,8 +26,6 @@ st.markdown("""
     html, body, [class*="css"] {
         font-family: 'Sans-serif';
     }
-    
-    /* Tombol Utama */
     .stButton button {
         height: 55px;
         font-weight: bold;
@@ -38,8 +36,6 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
-
-    /* Kartu Metric */
     div[data-testid="stMetric"] {
         padding: 15px;
         border-radius: 10px;
@@ -47,8 +43,6 @@ st.markdown("""
         text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    
-    /* Judul */
     .main-title {
         font-size: 3rem;
         font-weight: 800;
@@ -141,50 +135,88 @@ if 'transaksi' not in st.session_state:
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
-# --- FUNGSI OCR (SMART KEYWORD SEARCH) ---
-def proses_ocr(gambar):
-    if not OCR_AVAILABLE: return 0
-    if os.name == 'nt' and not tesseract_found: return 0
+# --- FUNGSI OCR CERDAS (TOTAL + ITEM) ---
+def proses_ocr_lengkap(gambar):
+    """
+    Mengembalikan tuple: (Total_Harga, String_Detail_Item)
+    Contoh output: (25000, "Ayam Goreng, Nasi Putih")
+    """
+    if not OCR_AVAILABLE: return 0, ""
+    if os.name == 'nt' and not tesseract_found: return 0, ""
+    
+    total_found = 0
+    items_found = []
+    
     try:
-        # 1. Ambil semua teks dari gambar
+        # Ambil teks mentah
         text = pytesseract.image_to_string(gambar)
+        lines = text.split('\n') # Pecah per baris
         text_lower = text.lower()
-        
-        # 2. DEFINISI KATA KUNCI (Prioritas Utama)
-        keywords = ['total', 'jumlah', 'bayar', 'grand total', 'amount', 'tagihan']
-        
-        for kw in keywords:
-            if kw in text_lower:
-                start_index = text_lower.find(kw)
-                relevant_text = text_lower[start_index:]
-                
-                text_bersih = relevant_text.replace('.', '').replace(',', '')
-                angka_ditemukan = re.findall(r'\d+', text_bersih)
-                
-                for n in angka_ditemukan:
-                    if n.isdigit():
-                        val = int(n)
-                        if 1000 <= val <= 50000000:
-                            return val
 
-        # 3. STRATEGI CADANGAN (Fallback)
-        text_bersih = text.replace('.', '').replace(',', '')
-        angka_ditemukan = re.findall(r'\d+', text_bersih)
+        # 1. CARI TOTAL HARGA (Logika Lama yang Sudah Bagus)
+        # Cari kata kunci Total/Jumlah
+        keywords_total = ['total', 'jumlah', 'bayar', 'tagihan', 'amount']
+        for kw in keywords_total:
+            if kw in text_lower:
+                # Potong teks mulai dari kata kunci
+                idx = text_lower.find(kw)
+                subtext = text_lower[idx:]
+                nums = re.findall(r'\d+', subtext.replace('.', '').replace(',', ''))
+                for n in nums:
+                    val = int(n)
+                    if 1000 <= val <= 50000000:
+                        total_found = val
+                        break
+                if total_found: break
         
-        valid_numbers = []
-        for n in angka_ditemukan:
-            if n.isdigit():
-                if len(n) > 8: 
-                    continue
-                val = int(n)
-                if 1000 <= val <= 20000000:
-                    valid_numbers.append(val)
+        # Fallback Total: Cari angka terbesar yang wajar
+        if total_found == 0:
+            nums = re.findall(r'\d+', text.replace('.', '').replace(',', ''))
+            valid_nums = [int(n) for n in nums if n.isdigit() and 1000 <= int(n) <= 20000000 and len(n) <= 8]
+            if valid_nums:
+                total_found = max(valid_nums)
+
+        # 2. CARI DETAIL ITEM (Logika Baru)
+        # Kita cari baris yang formatnya kira-kira: "Nama Barang .... Angka"
+        ignore_words = ['total', 'tunai', 'kembali', 'change', 'cash', 'pajak', 'tax', 'diskon', 'telp', 'jl.', 'tanggal', 'date', 'subtotal']
         
-        if valid_numbers:
-            return max(valid_numbers)
+        for line in lines:
+            line_clean = line.strip()
+            line_lower = line_clean.lower()
             
-    except: pass
-    return 0
+            # Skip baris kosong atau terlalu pendek
+            if len(line_clean) < 5: continue
+            
+            # Skip baris yang mengandung kata-kata "sistem" (bukan menu makanan)
+            if any(ign in line_lower for ign in ignore_words): continue
+            
+            # Cek apakah baris ini punya angka (Harga)
+            # Regex: Mencari angka di akhir kalimat
+            has_price = re.search(r'\d+(?:[.,]\d+)*$', line_clean)
+            
+            if has_price:
+                # Ambil teks sebelum angka sebagai Nama Barang
+                # Hapus angka dan simbol mata uang
+                text_part = re.sub(r'[\d.,Rp]+$', '', line_clean).strip()
+                
+                # Bersihkan simbol aneh hasil salah baca OCR
+                text_part = re.sub(r'[^\w\s]', '', text_part).strip()
+                
+                # Jika sisa teksnya masih panjang (valid nama menu)
+                if len(text_part) > 3:
+                    items_found.append(text_part)
+
+    except Exception as e:
+        print(f"OCR Error: {e}")
+
+    # Gabungkan item jadi satu string, batasi max 3 item biar ga kepanjangan di input
+    keterangan_otomatis = ", ".join(items_found[:4]) if items_found else ""
+    
+    # Jika item kosong tapi total ada, default ke "Belanja"
+    if total_found > 0 and not keterangan_otomatis:
+        keterangan_otomatis = "Belanja (Auto Scan)"
+        
+    return total_found, keterangan_otomatis
 
 # --- FUNGSI HITUNG SALDO ---
 def hitung_statistik():
@@ -228,14 +260,13 @@ if st.session_state['active_form']:
     
     with st.container(border=True):
         nom_awal = 0
+        ket_awal = "" # Variabel untuk menampung hasil bacaan item struk
+        
         if jenis == "Pengeluaran" and OCR_AVAILABLE:
-            # Checkbox Utama: Apakah mau pakai fitur scan?
             use_ocr_feature = st.checkbox("📸 Gunakan Scan Struk (Otomatis)")
             
             if use_ocr_feature:
-                # Pilihan metode input gambar
                 metode_scan = st.radio("Metode Scan:", ["📸 Kamera Langsung", "📂 Upload File"], horizontal=True)
-                
                 img_file = None
                 
                 if metode_scan == "📸 Kamera Langsung":
@@ -243,26 +274,34 @@ if st.session_state['active_form']:
                 else:
                     img_file = st.file_uploader("Upload Foto Struk", type=['png', 'jpg', 'jpeg'])
                 
-                # Proses gambar jika ada file
                 if img_file:
-                    with st.spinner("Menganalisis gambar..."):
+                    with st.spinner("Menganalisis item belanja..."):
                         image_data = Image.open(img_file)
-                        
                         if metode_scan == "📂 Upload File":
                             st.image(image_data, caption="Preview Struk", width=200)
                             
-                        res = proses_ocr(image_data)
+                        # PANGGIL FUNGSI OCR BARU YANG BISA BACA ITEM
+                        res_total, res_ket = proses_ocr_lengkap(image_data)
                     
-                    if res > 0: 
-                        st.success(f"Harga terdeteksi: Rp {res:,}")
-                        nom_awal = res
+                    if res_total > 0: 
+                        st.success(f"Terdeteksi: Rp {res_total:,}")
+                        st.info(f"Item ditemukan: {res_ket}")
+                        nom_awal = res_total
+                        ket_awal = res_ket # Isi otomatis keterangan
                     else: 
-                        st.warning("Gagal membaca harga otomatis. Silakan input manual.")
+                        st.warning("Gagal membaca struk. Coba foto lebih jelas.")
 
         with st.form("form_utama", border=False):
             c_in1, c_in2 = st.columns(2)
+            # Input Nominal otomatis terisi nom_awal
             nom = c_in1.number_input("Nominal (Rp)", min_value=0, value=nom_awal, step=5000)
-            ket = c_in2.text_input("Keterangan", placeholder="Contoh: Beli Kopi")
+            
+            # Input Keterangan otomatis terisi ket_awal (Hasil scan item)
+            # Jika ket_awal kosong, tampilkan placeholder biasa
+            if ket_awal:
+                ket = c_in2.text_input("Keterangan", value=ket_awal)
+            else:
+                ket = c_in2.text_input("Keterangan", placeholder="Contoh: Ayam Goreng, Nasi")
             
             c_submit, c_space = st.columns([1, 2])
             
@@ -315,7 +354,6 @@ if st.session_state['transaksi']:
         num_rows="fixed"
     )
 
-    # LOGIKA SIMPAN PERUBAHAN
     if edited_df["Hapus"].any():
         with st.spinner("Menghapus data..."):
             to_delete = edited_df[edited_df["Hapus"] == True]
@@ -348,7 +386,6 @@ st.write("")
 st.write("")
 st.write("")
 
-# Membuat kolom agar tombol reset mojok di kanan
 col_spacer, col_reset = st.columns([3, 1])
 
 with col_reset:
