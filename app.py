@@ -141,36 +141,45 @@ if 'transaksi' not in st.session_state:
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
-# --- FUNGSI OCR (VERSI CERDAS) ---
+# --- FUNGSI OCR (SMART KEYWORD SEARCH) ---
 def proses_ocr(gambar):
     if not OCR_AVAILABLE: return 0
     if os.name == 'nt' and not tesseract_found: return 0
     try:
+        # 1. Ambil semua teks dari gambar
         text = pytesseract.image_to_string(gambar)
+        text_lower = text.lower()
         
-        # Bersihkan titik/koma agar jadi angka murni
+        # 2. DEFINISI KATA KUNCI (Prioritas Utama)
+        keywords = ['total', 'jumlah', 'bayar', 'grand total', 'amount', 'tagihan']
+        
+        for kw in keywords:
+            if kw in text_lower:
+                start_index = text_lower.find(kw)
+                relevant_text = text_lower[start_index:]
+                
+                text_bersih = relevant_text.replace('.', '').replace(',', '')
+                angka_ditemukan = re.findall(r'\d+', text_bersih)
+                
+                for n in angka_ditemukan:
+                    if n.isdigit():
+                        val = int(n)
+                        if 1000 <= val <= 50000000:
+                            return val
+
+        # 3. STRATEGI CADANGAN (Fallback)
         text_bersih = text.replace('.', '').replace(',', '')
-        
-        # Cari semua pola angka
-        import re
         angka_ditemukan = re.findall(r'\d+', text_bersih)
         
         valid_numbers = []
         for n in angka_ditemukan:
             if n.isdigit():
-                # FILTER 1: Buang angka yang digitnya kepanjangan (> 9 digit)
-                # Resi/Barcode biasanya 10-15 digit. Harga wajar biasanya < 9 digit (Ratusan Juta)
-                if len(n) > 9: 
+                if len(n) > 8: 
                     continue
-                
                 val = int(n)
-                
-                # FILTER 2: Ambil range harga wajar (Misal Rp 1.000 - Rp 100 Juta)
-                # Ini membuang angka kecil seperti tanggal "2024" atau jam "1200"
-                if 1000 <= val <= 100000000:
+                if 1000 <= val <= 20000000:
                     valid_numbers.append(val)
         
-        # Ambil yang terbesar dari sisa angka yang valid
         if valid_numbers:
             return max(valid_numbers)
             
@@ -220,31 +229,35 @@ if st.session_state['active_form']:
     with st.container(border=True):
         nom_awal = 0
         if jenis == "Pengeluaran" and OCR_AVAILABLE:
-            # Pilihan metode input gambar
-            metode_scan = st.radio("Metode Scan Struk:", ["📸 Kamera Langsung", "📂 Upload File"], horizontal=True)
+            # Checkbox Utama: Apakah mau pakai fitur scan?
+            use_ocr_feature = st.checkbox("📸 Gunakan Scan Struk (Otomatis)")
             
-            img_file = None
-            
-            if metode_scan == "📸 Kamera Langsung":
-                img_file = st.camera_input("Ambil Foto Struk")
-            else:
-                img_file = st.file_uploader("Upload Foto Struk", type=['png', 'jpg', 'jpeg'])
-            
-            # Proses gambar jika ada file
-            if img_file:
-                with st.spinner("Menganalisis gambar..."):
-                    image_data = Image.open(img_file)
-                    
-                    if metode_scan == "📂 Upload File":
-                        st.image(image_data, caption="Preview Struk", width=200)
-                        
-                    res = proses_ocr(image_data)
+            if use_ocr_feature:
+                # Pilihan metode input gambar
+                metode_scan = st.radio("Metode Scan:", ["📸 Kamera Langsung", "📂 Upload File"], horizontal=True)
                 
-                if res > 0: 
-                    st.success(f"Harga terdeteksi: Rp {res:,}")
-                    nom_awal = res
-                else: 
-                    st.warning("Gagal membaca harga otomatis. Silakan input manual.")
+                img_file = None
+                
+                if metode_scan == "📸 Kamera Langsung":
+                    img_file = st.camera_input("Ambil Foto Struk")
+                else:
+                    img_file = st.file_uploader("Upload Foto Struk", type=['png', 'jpg', 'jpeg'])
+                
+                # Proses gambar jika ada file
+                if img_file:
+                    with st.spinner("Menganalisis gambar..."):
+                        image_data = Image.open(img_file)
+                        
+                        if metode_scan == "📂 Upload File":
+                            st.image(image_data, caption="Preview Struk", width=200)
+                            
+                        res = proses_ocr(image_data)
+                    
+                    if res > 0: 
+                        st.success(f"Harga terdeteksi: Rp {res:,}")
+                        nom_awal = res
+                    else: 
+                        st.warning("Gagal membaca harga otomatis. Silakan input manual.")
 
         with st.form("form_utama", border=False):
             c_in1, c_in2 = st.columns(2)
