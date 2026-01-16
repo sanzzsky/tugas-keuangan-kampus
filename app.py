@@ -198,16 +198,33 @@ if st.session_state['active_form']:
     with st.container(border=True):
         nom_awal = 0
         if jenis == "Pengeluaran" and OCR_AVAILABLE:
-            use_cam = st.checkbox("📸 Gunakan Scan Struk")
-            if use_cam:
-                img = st.camera_input("Ambil Foto Struk")
-                if img:
-                    with st.spinner("Menganalisis gambar..."):
-                        res = proses_ocr(Image.open(img))
-                    if res > 0: 
-                        st.success(f"Harga terdeteksi: Rp {res:,}")
-                        nom_awal = res
-                    else: st.warning("Gagal membaca harga otomatis.")
+            # Pilihan metode input gambar
+            metode_scan = st.radio("Metode Scan Struk:", ["📸 Kamera Langsung", "📂 Upload File"], horizontal=True)
+            
+            img_file = None
+            
+            if metode_scan == "📸 Kamera Langsung":
+                img_file = st.camera_input("Ambil Foto Struk")
+            else:
+                img_file = st.file_uploader("Upload Foto Struk", type=['png', 'jpg', 'jpeg'])
+            
+            # Proses gambar jika ada file (baik dari kamera atau upload)
+            if img_file:
+                with st.spinner("Menganalisis gambar..."):
+                    # Buka gambar menggunakan PIL
+                    image_data = Image.open(img_file)
+                    
+                    # Tampilkan preview kecil jika upload file (kamera sudah ada preview sendiri)
+                    if metode_scan == "📂 Upload File":
+                        st.image(image_data, caption="Preview Struk", width=200)
+                        
+                    res = proses_ocr(image_data)
+                
+                if res > 0: 
+                    st.success(f"Harga terdeteksi: Rp {res:,}")
+                    nom_awal = res
+                else: 
+                    st.warning("Gagal membaca harga otomatis. Silakan input manual.")
 
         with st.form("form_utama", border=False):
             c_in1, c_in2 = st.columns(2)
@@ -226,7 +243,7 @@ if st.session_state['active_form']:
                     }
                     tambah_data_firestore(baru) 
                     
-                    st.toast('✅ Data berhasil disimpan ke Cloud!', icon='☁️')
+                    st.toast('✅ berhasil disimpan ke Cloud!', icon='☁️')
                     time.sleep(1)
                     st.session_state['transaksi'] = load_data_firestore()
                     st.session_state['active_form'] = None
@@ -255,7 +272,7 @@ if st.session_state['transaksi']:
         use_container_width=True,
         column_config={
             "id": None, 
-            "Hapus": st.column_config.CheckboxColumn("🗑️ Hapus", width="small", default=False),
+            "Hapus": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
             "Nominal": st.column_config.NumberColumn("Nominal", format="Rp %d"),
             "Jenis": st.column_config.SelectboxColumn("Tipe", options=["Pemasukan", "Pengeluaran"], width="small"),
             "Tanggal": st.column_config.TextColumn("Waktu", disabled=True),
@@ -293,7 +310,7 @@ if st.session_state['transaksi']:
 else:
     st.info("👋 Belum ada data. Yuk mulai catat keuanganmu!")
 
-# --- FOOTER  ---
+# --- FOOTER ---
 st.write("")
 st.write("")
 st.write("")
