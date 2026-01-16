@@ -135,7 +135,7 @@ if 'transaksi' not in st.session_state:
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
-# --- FUNGSI OCR (VERSI "LOOKBEHIND") ---
+# --- FUNGSI OCR (VERSI "CLEAN & SMART") ---
 def proses_ocr_lengkap(gambar):
     if not OCR_AVAILABLE: return 0, ""
     if os.name == 'nt' and not tesseract_found: return 0, ""
@@ -168,81 +168,85 @@ def proses_ocr_lengkap(gambar):
             if valid_nums:
                 total_found = max(valid_nums)
 
-        # 2. CARI DETAIL ITEM (Logika Baru: Cek Baris Atasnya)
-        ignore_words = ['total', 'tunai', 'kembali', 'change', 'cash', 'pajak', 'tax', 'diskon', 'telp', 'jl.', 'tanggal', 'date', 'subtotal', 'bayar', 'jumlah', 'no.', 'inv', 'pos', 'pembayaran']
+        # 2. CARI DETAIL ITEM (Filter Ketat)
+        ignore_words = [
+            'total', 'tunai', 'kembali', 'change', 'cash', 'pajak', 'tax', 
+            'diskon', 'telp', 'jl.', 'tanggal', 'date', 'subtotal', 'bayar', 
+            'jumlah', 'no.', 'inv', 'pos', 'pembayaran', 'kemba', 'no 0'
+        ]
         
         for i, line in enumerate(lines):
             line_clean = line.strip()
             line_lower = line_clean.lower()
             
-            # Skip baris sampah
+            # Skip baris sampah/pendek
             if len(line_clean) < 3: continue
             if any(ign in line_lower for ign in ignore_words): continue
             
-            # Cek apakah baris ini berakhiran ANGKA (Harga)
+            # Cari Harga di Ujung Kanan
             match_price = re.search(r'((?:Rp\.?|Rp)?\s*[\d,.]+)$', line_clean)
             
             if match_price:
-                # Ambil string harganya saja
                 price_str = match_price.group(1).strip()
-                # Cek validitas harga (harus ada digit)
+                # Cek harga valid
                 if not any(c.isdigit() for c in price_str): continue
                 
-                # AMBIL TEKS SEBELAH KIRI HARGA (Calon Nama)
-                # Kita potong string berdasarkan posisi harga
+                # AMBIL TEKS KIRI (Nama Item)
                 end_idx = line_clean.rfind(price_str)
                 left_text = line_clean[:end_idx].strip()
-                
-                # Bersihkan simbol aneh di awal/akhir
-                left_text = re.sub(r'^[^\w]+|[^\w]+$', '', left_text)
+                left_text = re.sub(r'^[^\w]+|[^\w]+$', '', left_text) # Hapus simbol aneh di ujung
                 
                 final_name = ""
                 qty_str = ""
                 
-                # CEK KASUS: Apakah teks kirinya CUMA angka/qty? (Misal: "1" atau "1 x")
-                # Jika iya, berarti nama menunya ada di BARIS SEBELUMNYA (i-1)
+                # Cek apakah teks kiri cuma angka/qty (Contoh: "1 x")
+                # Regex ini cek: apakah isinya cuma angka, spasi, atau huruf x
                 is_only_qty = re.match(r'^[\d\s\txX]+$', left_text)
                 
                 if is_only_qty or len(left_text) < 2:
+                    # Kalau cuma angka, TENGOK ATAS (Lookbehind)
                     if i > 0:
                         prev_line = lines[i-1].strip()
-                        # Pastikan baris atasnya valid (bukan header/kosong)
+                        # Filter baris atas: Harus panjang & bukan kata terlarang
                         if len(prev_line) > 3 and not any(ign in prev_line.lower() for ign in ignore_words):
-                            # Pastikan baris atasnya TIDAK punya harga (biar ga double)
+                            # Pastikan baris atas TIDAK punya harga (biar ga duplikat)
                             if not re.search(r'[\d,.]+$', prev_line):
                                 final_name = prev_line
-                                qty_str = left_text # Anggap left text skrg adalah Qty
+                                qty_str = left_text 
                 else:
                     # Nama menu ada di baris yang sama
                     final_name = left_text
                 
-                # FORMATTING HASIL
+                # SIMPAN HASIL KALAU VALID
                 if final_name:
-                    # Bersihkan nama dari karakter non-huruf berlebih
+                    # Bersihkan nama (Hapus karakter non-huruf yang aneh)
                     final_name = re.sub(r'[^\w\s-]', '', final_name).strip()
                     
-                    # Cek Qty "2x" di dalam nama
+                    # Format Qty "2x"
                     match_qty = re.match(r'^(\d+)\s*[xX]?\s+(.+)', final_name)
                     if match_qty:
                         qty_str = match_qty.group(1) + "x"
                         final_name = match_qty.group(2)
                     elif qty_str:
-                         # Bersihkan qty_str jadi angka saja + "x"
                          q_nums = re.findall(r'\d+', qty_str)
                          if q_nums: qty_str = q_nums[0] + "x"
                     
                     full_item = f"{qty_str} {final_name}".strip()
                     
-                    # Validasi: Harus ada huruf (bukan angka doang) & panjang cukup
+                    # VALIDASI AKHIR:
+                    # 1. Harus ada huruf (a-z) -> Biar "1x" gak lolos
+                    # 2. Panjang minimal 3 huruf
+                    # 3. Bukan kata terlarang yang lolos
                     if re.search(r'[a-zA-Z]', full_item) and len(full_item) > 3:
-                         if not items_found or items_found[-1] != full_item:
-                             items_found.append(full_item)
+                         if not any(ign in full_item.lower() for ign in ignore_words):
+                             # Hindari duplikat
+                             if not items_found or items_found[-1] != full_item:
+                                 items_found.append(full_item)
 
     except Exception as e:
         print(f"OCR Error: {e}")
 
     keterangan_otomatis = ", ".join(items_found[:5]) if items_found else ""
-    
     return total_found, keterangan_otomatis
 
 # --- FUNGSI HITUNG SALDO ---
@@ -320,10 +324,8 @@ if st.session_state['active_form']:
 
         with st.form("form_utama", border=False):
             c_in1, c_in2 = st.columns(2)
-            # Input Nominal
             nom = c_in1.number_input("Nominal (Rp)", min_value=0, value=nom_awal, step=5000)
             
-            # Input Keterangan
             if ket_awal:
                 ket = c_in2.text_input("Keterangan", value=ket_awal)
             else:
