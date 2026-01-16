@@ -141,18 +141,39 @@ if 'transaksi' not in st.session_state:
 if 'active_form' not in st.session_state:
     st.session_state['active_form'] = None 
 
-# --- FUNGSI OCR ---
+# --- FUNGSI OCR (VERSI CERDAS) ---
 def proses_ocr(gambar):
     if not OCR_AVAILABLE: return 0
     if os.name == 'nt' and not tesseract_found: return 0
     try:
         text = pytesseract.image_to_string(gambar)
-        import re
+        
+        # Bersihkan titik/koma agar jadi angka murni
         text_bersih = text.replace('.', '').replace(',', '')
+        
+        # Cari semua pola angka
+        import re
         angka_ditemukan = re.findall(r'\d+', text_bersih)
-        if angka_ditemukan:
-            angka_int = [int(n) for n in angka_ditemukan if n.isdigit()]
-            if angka_int: return max(angka_int)
+        
+        valid_numbers = []
+        for n in angka_ditemukan:
+            if n.isdigit():
+                # FILTER 1: Buang angka yang digitnya kepanjangan (> 9 digit)
+                # Resi/Barcode biasanya 10-15 digit. Harga wajar biasanya < 9 digit (Ratusan Juta)
+                if len(n) > 9: 
+                    continue
+                
+                val = int(n)
+                
+                # FILTER 2: Ambil range harga wajar (Misal Rp 1.000 - Rp 100 Juta)
+                # Ini membuang angka kecil seperti tanggal "2024" atau jam "1200"
+                if 1000 <= val <= 100000000:
+                    valid_numbers.append(val)
+        
+        # Ambil yang terbesar dari sisa angka yang valid
+        if valid_numbers:
+            return max(valid_numbers)
+            
     except: pass
     return 0
 
@@ -163,8 +184,9 @@ def hitung_statistik():
     keluar = sum(t['Nominal'] for t in st.session_state['transaksi'] if t['Jenis'] == 'Pengeluaran')
     return masuk, keluar, masuk - keluar
 
-
+# ==========================================
 # UI DASHBOARD
+# ==========================================
 
 st.markdown('<h1 class="main-title">💸 DompetKu</h1>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Kelola keuanganmu dengan mudah & aman di Cloud</p>', unsafe_allow_html=True)
@@ -208,13 +230,11 @@ if st.session_state['active_form']:
             else:
                 img_file = st.file_uploader("Upload Foto Struk", type=['png', 'jpg', 'jpeg'])
             
-            # Proses gambar jika ada file (baik dari kamera atau upload)
+            # Proses gambar jika ada file
             if img_file:
                 with st.spinner("Menganalisis gambar..."):
-                    # Buka gambar menggunakan PIL
                     image_data = Image.open(img_file)
                     
-                    # Tampilkan preview kecil jika upload file (kamera sudah ada preview sendiri)
                     if metode_scan == "📂 Upload File":
                         st.image(image_data, caption="Preview Struk", width=200)
                         
@@ -233,7 +253,7 @@ if st.session_state['active_form']:
             
             c_submit, c_space = st.columns([1, 2])
             
-            if c_submit.form_submit_button("💾 SIMPAN ", use_container_width=True):
+            if c_submit.form_submit_button("💾 SIMPAN DATA", use_container_width=True):
                 if nom > 0:
                     baru = {
                         'Tanggal': datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -243,7 +263,7 @@ if st.session_state['active_form']:
                     }
                     tambah_data_firestore(baru) 
                     
-                    st.toast('✅ berhasil disimpan ke Cloud!', icon='☁️')
+                    st.toast('✅ Data berhasil disimpan ke Cloud!', icon='☁️')
                     time.sleep(1)
                     st.session_state['transaksi'] = load_data_firestore()
                     st.session_state['active_form'] = None
@@ -319,7 +339,6 @@ st.write("")
 col_spacer, col_reset = st.columns([3, 1])
 
 with col_reset:
-    # Menggunakan Expander agar tidak terpencet tidak sengaja
     with st.expander("💀 Reset Database"):
         st.warning("Semua data akan dihapus permanen!")
         konfirmasi_reset = st.checkbox("Saya Yakin")
